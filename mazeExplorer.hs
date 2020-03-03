@@ -1,9 +1,12 @@
 data Coord = Coord (Int, Int) deriving (Show, Eq)
-
 type ExitPoint = Coord
 type EntryPoint = Coord
-
 data Direction = North | East | South | West deriving (Eq, Enum)
+data Message = Possible | Impossible deriving (Eq, Enum)
+
+instance Show Message where
+  show Possible = "possible/true/yay"
+  show Impossible = "impossible/not true/darn it"
 
 data Maze = Maze { path :: [Coord],
                    entryPoint :: (Direction, Coord),
@@ -23,69 +26,105 @@ instance Show Symbol where
   show Wall = "#"
   show Empty = " "
 
-filterDirection :: ([Char], (Int, Int)) -> (Direction, Coord)
-filterDirection ("^", (x,y)) = (North, (Coord (x,y)))
-filterDirection ("<", (x,y)) = (West, (Coord (x,y)))
-filterDirection (">", (x,y)) = (East, (Coord (x,y)))
-filterDirection ("v", (x,y)) = (South, (Coord (x,y)))
+getDirection :: String -> Direction
+getDirection "^" = North
+getDirection "<" = West
+getDirection ">" = East
+getDirection "v" = South
 
-left :: Direction -> Direction
-left North = West
-left s = pred s
+moveLeft :: Direction -> Direction
+moveLeft North = West
+moveLeft s = pred s
 
-right :: Direction -> Direction
-right West = North
-right s = succ s
+moveRight :: Direction -> Direction
+moveRight West = North
+moveRight s = succ s
 
 turn180 :: Direction -> Direction
-turn180 s = left (left s)
+turn180 = moveLeft . moveLeft
 
-move :: Direction -> Coord -> Coord
-move South (Coord (x,y)) = Coord ((succ x), y)
-move East (Coord ( x ,y)) =  Coord (x, (succ y))
-move North (Coord (x,y)) =  Coord ((pred x), y)
-move West (Coord (x,y)) = Coord (x, (pred y))
+parseCoord :: (Int, Int) -> Coord
+parseCoord (x,y) = Coord (x, y)
 
-getEntryPoint :: [([Char], (Int, Int))] -> (Direction, Coord)
-getEntryPoint c = filterDirection (head (filter (\(x, y) ->
-  x == (show East) || x == (show West) || x == (show North) || x == (show South)) c))
-getExitPoint :: [([Char],(Int, Int))] -> Coord
-getExitPoint mapping = do
-  let exit = head (filter (\(x, y) -> x == (show Exit)) mapping)
-  Coord(snd exit)
+getEntryPoint :: [(String, (Int, Int))] -> (Direction, Coord)
+getEntryPoint maze =
+  let entryPoint = head (filter ( isDirection . fst)  maze)
+  in convertToDomain (entryPoint)
+
+move :: Coord -> Direction -> Coord
+move (Coord (x,y)) South = Coord ((succ x), y)
+move (Coord (x,y)) East =  Coord (x, (succ y))
+move (Coord (x,y)) North =  Coord ((pred x), y)
+move (Coord (x,y)) West = Coord (x, (pred y))
+
+isDirection :: String -> Bool
+isDirection symbol = (any ((symbol==) . show) [North, South, East, West])
+
+getExitPoint :: [(String,(Int, Int))] -> Coord
+getExitPoint mapping =
+  let exitPoint = (snd (head (filter (\(x, y) -> x == (show Exit)) mapping)))
+  in Coord exitPoint
+
+grid = [(x,y) | x <- [0..2], y <- [0..8]]
+mazeWithoutNewLine x = (filter (/= "\n")) (map (\n -> [n]) x)
+
+mapping :: String -> [(String,(Int, Int))]
+mapping maze = zip (mazeWithoutNewLine maze) grid
+
+isExit :: String -> Bool
+isExit symbol = symbol == (show Exit)
+
+isEmpty :: String -> Bool
+isEmpty symbol = symbol == (show Empty)
+
+isPath :: String -> Bool
+isPath x = (isDirection x) ||  (isExit x) || (isEmpty x)
+
+convertToDomain :: (String, (Int, Int)) -> (Direction, Coord)
+convertToDomain (d, (x,y)) = ((getDirection d), parseCoord(x,y))
 
 parseMaze maze = do
-  let grid = (,) <$> [0,1..11] <*> [0,1..8]
-  let mazeWithoutNewLine = filter (\x->x /= "\n") (map (\x-> [x]) maze)
-  let mapping = zip mazeWithoutNewLine grid
-  let path = map (\(x ,y) -> Coord y) (filter (\(x, y) -> x == (show Empty)) mapping)
-  let entryPoint = getEntryPoint mapping
-  let exitPoint = getExitPoint mapping
-  Maze (path ++ [exitPoint]) entryPoint exitPoint
+  let path = map (Coord . snd) (filter (isEmpty . fst) (mapping maze))
+  let entryPoint = getEntryPoint (mapping maze)
+  let exitPoint = getExitPoint (mapping maze)
+  Maze ([(snd entryPoint)] ++ path ++ [exitPoint]) entryPoint exitPoint
 
-walk :: [Coord] -> Coord -> Direction -> Coord -> Coord
-walk path exitPoint currentDirection currentPosition = do
-  let nextPosition = move currentDirection currentPosition
-  let turnRight = move (right currentDirection) currentPosition
-  let turnLeft = move (left currentDirection) currentPosition
-  let turnBack = move (turn180 currentDirection) currentPosition
+turn :: Direction -> [Direction]
+turn currentDirection = (sequence [moveRight,moveLeft,turn180,id] currentDirection)
+
+data Action = Forward | GoRight | GoLeft | AboutTurn deriving (Show,Eq)
+
+actionToTake True _ _ _ = Forward
+actionToTake _ True _ _ = GoRight
+actionToTake _ _ True _ = GoLeft
+actionToTake _ _ _ True = AboutTurn
+
+walk :: [Coord] -> Coord -> Direction -> Coord -> Int -> Int -> Message
+walk _ _ _ _ 3 _ = Impossible
+walk p e cd cp ic 6 = walk p e (turn180 cd) cp (succ ic) 0
+walk path exitPoint currentDirection currentPosition infiniteCount stepCount = do
   if currentPosition == exitPoint
-    then do
-      currentPosition
-    else do
-      if not (nextPosition `elem` path)
-        then do
-          if not (turnRight `elem` path)
-            then
-              if not (turnLeft `elem` path)
-                then walk path exitPoint (turn180 currentDirection) turnBack
-                else
-                  walk path exitPoint (left currentDirection) turnLeft
-            else
-              walk path exitPoint (right currentDirection) turnRight
-        else walk path exitPoint currentDirection nextPosition
+    then 
+      Possible
+      else
+        case action of Forward   -> walkToNext currentDirection forward infiniteCount (succ stepCount)
+                       GoRight   -> walkToNext (moveRight currentDirection) right infiniteCount (succ stepCount)
+                       GoLeft    -> walkToNext (moveLeft currentDirection) left infiniteCount (succ stepCount)
+                       AboutTurn -> walkToNext (turn180 currentDirection) backward (succ infiniteCount) (succ stepCount)
+        where inPath = (`elem` path)
+              nextPosition = map (move currentPosition) (turn currentDirection)
+              [canMoveRight, canMoveLeft, canMoveBackward, canMoveForward] = map inPath nextPosition
+              [right, left, backward, forward] = nextPosition
+              action = (actionToTake canMoveForward canMoveRight canMoveLeft canMoveBackward)
+              walkToNext = walk path exitPoint
 
-explore :: Maze -> Coord
+explore :: Maze -> Message
 explore (Maze { path = p, entryPoint = entry, exitPoint = exit}) = do
   let currentDirection = (fst entry)
-  walk p exit currentDirection (snd entry)
+  walk p exit currentDirection (snd entry) 0 0
+
+main :: IO()
+main = do
+  putStrLn "Enter maze"
+  maze <- getLine
+  (putStrLn $ show (map id maze))
